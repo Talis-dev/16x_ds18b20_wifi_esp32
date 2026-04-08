@@ -15,6 +15,7 @@ extern Config          cfg;
 extern EthernetServer  webServer;
 extern int             devCount1;
 extern int             devCount2;
+extern String          g_readingsCache;  // cache de leituras (sensors.ino)
 
 // Cache das últimas leituras para a página web
 static String lastReadingsJson = "{}";
@@ -172,10 +173,21 @@ const loadStatus = async () => {
     renderBus('bus1-body', d.bus1||[]);
     renderBus('bus2-body', d.bus2||[]);
 
-    // Diagnóstico
-    loadDiag();
+    // Diagnóstico calculado no cliente a partir dos dados de status
+    if(d.bus1) renderDiagFromData('diag1', d.bus1);
+    if(d.bus2) renderDiagFromData('diag2', d.bus2);
+
+    // Carrega config nos inputs apenas na primeira vez
+    if(!window._cfgLoaded && d.config){
+      window._cfgLoaded = true;
+      document.getElementById('cfg-host').value=d.config.serverHost||'';
+      document.getElementById('cfg-port').value=d.config.serverPort||'';
+      document.getElementById('cfg-path').value=d.config.serverPath||'';
+      document.getElementById('cfg-poll').value=d.config.pollInterval||'';
+      document.getElementById('cfg-name').value=d.config.deviceName||'';
+    }
   }catch(e){console.error(e);}
-}
+};
 
 const loadDiag = async () => {
   try{
@@ -184,6 +196,18 @@ const loadDiag = async () => {
     renderDiag('diag1', d.bus1);
     renderDiag('diag2', d.bus2);
   }catch(e){}
+};
+
+const renderDiagFromData = (id, sensors) => {
+  const discovered = sensors.length;
+  const responding = sensors.filter(s=>!s.error).length;
+  const pct = discovered > 0 ? Math.round(responding*100/discovered) : 0;
+  const color=pct>=90?'#4caf50':pct>=60?'#ff9800':'#f44336';
+  const note=pct===100?'Otimo':pct>=75?'Bom':pct>=50?'Regular - ajuste pull-up':'Ruim - verifique cabos';
+  document.getElementById(id).innerHTML=
+    `<span>${responding}/${discovered} sensores respondendo &mdash; `+
+    `<strong style="color:${color}">${pct}%</strong> &mdash; ${note}</span>`+
+    `<div class="quality-bar-bg"><div class="quality-bar" style="width:${pct}%;background:${color}"></div></div>`;
 };
 
 const renderDiag = (id, data) => {
@@ -249,23 +273,8 @@ const showMsg = (txt) => {
   setTimeout(()=>el.innerHTML='',4000);
 };
 
-const loadConfig = async () => {
-  try{
-    const r=await fetch('/api/status');
-    const d=await r.json();
-    if(d.config){
-      document.getElementById('cfg-host').value=d.config.serverHost||'';
-      document.getElementById('cfg-port').value=d.config.serverPort||'';
-      document.getElementById('cfg-path').value=d.config.serverPath||'';
-      document.getElementById('cfg-poll').value=d.config.pollInterval||'';
-      document.getElementById('cfg-name').value=d.config.deviceName||'';
-    }
-  }catch(e){}
-}
-
 loadStatus();
-loadConfig();
-setInterval(loadStatus, 5000);
+setInterval(loadStatus, 8000);
 </script>
 </body>
 </html>)rawhtml");
@@ -280,11 +289,9 @@ setInterval(loadStatus, 5000);
 // GET /api/status
 // -------------------------------------------------------
 static void handleApiStatus(EthernetClient& c) {
-  // Leitura ao vivo (não usa cache) para /api/status
-  String readings = buildReadingsJson();
-
+  // Usa cache atualizado pelo polling (sem reads bloqueantes)
   StaticJsonDocument<3584> doc;
-  deserializeJson(doc, readings);
+  deserializeJson(doc, g_readingsCache);
 
   // Injeta status de rede
   StaticJsonDocument<256> ethDoc;
@@ -309,13 +316,30 @@ static void handleApiStatus(EthernetClient& c) {
 // GET /api/diag
 // -------------------------------------------------------
 static void handleApiDiag(EthernetClient& c) {
-  StaticJsonDocument<512> doc;
+  // Computa qualidade a partir do cache (sem reads bloqueantes)
+  StaticJsonDocument<3584> cacheDoc;
+  deserializeJson(cacheDoc, g_readingsCache);
 
-  StaticJsonDocument<256> d1, d2;
-  deserializeJson(d1, busDiagJson(1));
-  deserializeJson(d2, busDiagJson(2));
-  doc["bus1"] = d1;
-  doc["bus2"] = d2;
+  StaticJsonDocument<512> doc;
+  const char* keys[] = { "bus1", "bus2" };
+  for (int b = 0; b < 2; b++) {
+    JsonArray arr = cacheDoc[keys[b]].as<JsonArray>();
+    int discovered = arr.size();
+    int responding = 0;
+    for (JsonObject s : arr) {
+      if (!s.containsKey("error")) responding++;
+    }
+    int quality = (discovered > 0) ? (responding * 100 / discovered) : 0;
+    JsonObject o = doc[keys[b]].to<JsonObject>();
+    o["bus"]         = b + 1;
+    o["discovered"]  = discovered;
+    o["responding"]  = responding;
+    o["quality_pct"] = quality;
+    if      (quality == 100) o["note"] = "Otimo";
+    else if (quality >= 75)  o["note"] = "Bom";
+    else if (quality >= 50)  o["note"] = "Regular - ajuste o pull-up";
+    else                     o["note"] = "Ruim - verifique cabos e pull-up";
+  }
 
   String out;
   serializeJson(doc, out);
@@ -347,8 +371,31 @@ static void handleApiConfig(EthernetClient& c, const String& body) {
 // -------------------------------------------------------
 static void handleApiScan(EthernetClient& c) {
   scanBuses();
+  updateReadingsCache();   // atualiza cache com os novos endereços detectados
   httpPostAddresses();
-  sendOK(c, F("{\"ok\":true,\"bus1\":0,\"bus2\":0}"));
+
+  // Monta resposta com contagens e IDs de cada sensor
+  StaticJsonDocument<768> doc;
+  doc["ok"] = true;
+
+  char addrStr[17];
+  JsonArray b1 = doc.createNestedArray("bus1");
+  for (int i = 0; i < devCount1; i++) {
+    for (uint8_t b = 0; b < 8; b++) sprintf(addrStr + b * 2, "%02X", addrBus1[i][b]);
+    addrStr[16] = '\0';
+    b1.add(addrStr);
+  }
+
+  JsonArray b2 = doc.createNestedArray("bus2");
+  for (int i = 0; i < devCount2; i++) {
+    for (uint8_t b = 0; b < 8; b++) sprintf(addrStr + b * 2, "%02X", addrBus2[i][b]);
+    addrStr[16] = '\0';
+    b2.add(addrStr);
+  }
+
+  String out;
+  serializeJson(doc, out);
+  sendOK(c, out);
 }
 
 // -------------------------------------------------------

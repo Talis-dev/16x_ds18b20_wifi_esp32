@@ -66,12 +66,12 @@ void httpPostAddresses() {
 void httpPostReadings() {
   ethernetMaintain();                     // mantém DHCP/link
 
-  // Leituras de sensores
-  String readings = buildReadingsJson();
+  // Atualiza cache (faz os reads dos sensores 1x por poll)
+  updateReadingsCache();
 
-  // Status do dispositivo
+  // Monta JSON final com status de rede
   StaticJsonDocument<512> doc;
-  deserializeJson(doc, readings);         // base
+  deserializeJson(doc, g_readingsCache);  // base do cache
   doc["eth"]    = serialized(ethernetStatusJson());
   doc["free_heap"] = ESP.getFreeHeap();
 

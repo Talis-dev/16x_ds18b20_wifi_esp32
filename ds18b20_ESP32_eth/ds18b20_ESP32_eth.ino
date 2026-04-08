@@ -37,8 +37,8 @@
 // Pinos LEDs
 // -------------------------------------------------------
 #define LED_NET   12   // Status Rede / W5500
-#define LED_BUS1  14   // Atividade Barramento 1
-#define LED_BUS2  27   // Atividade Barramento 2 / Erro
+#define LED_BUS1  27   // Atividade Barramento 1
+#define LED_BUS2  14   // Atividade Barramento 2
 
 // -------------------------------------------------------
 // Pinos W5500
@@ -78,9 +78,11 @@ void ethernetMaintain();
 void scanBuses();
 void httpPostAddresses();
 void httpPostReadings();
+void updateReadingsCache();
 void ledSetup();
 void ledSet(int pin, int state);
 void ledBlink(int pin, int times, int ms);
+extern String g_readingsCache;
 
 // -------------------------------------------------------
 void setup() {
@@ -88,11 +90,8 @@ void setup() {
   delay(200);
   Serial.println(F("\n== DS18B20 ETH v2 =="));
 
-  // LEDs
-  ledSetup();
-  ledSet(LED_NET,  LOW);
-  ledSet(LED_BUS1, LOW);
-  ledSet(LED_BUS2, LOW);
+  // LEDs – active-low: HIGH = apagado, LOW = aceso
+  ledSetup();   // ledSetup já coloca todos em HIGH (apagado)
 
   // Carrega config da EEPROM
   configLoad(cfg);
@@ -105,6 +104,9 @@ void setup() {
 
   // OneWire scan inicial
   scanBuses();
+
+  // Popula cache imediatamente para a página web ter dados
+  updateReadingsCache();
 
   // Envia lista de endereços encontrados
   httpPostAddresses();

@@ -12,6 +12,15 @@ extern DeviceAddress addrBus1[16];
 extern DeviceAddress addrBus2[16];
 
 // -------------------------------------------------------
+// Cache de leituras (atualizado pelo loop de polling)
+// -------------------------------------------------------
+String g_readingsCache = "{}";
+
+void updateReadingsCache() {
+  g_readingsCache = buildReadingsJson();
+}
+
+// -------------------------------------------------------
 // Helpers
 // -------------------------------------------------------
 static void addrToStr(const DeviceAddress addr, char* out) {
@@ -80,7 +89,7 @@ static String readBusJson(DallasTemperature& bus, int count, DeviceAddress addrs
   StaticJsonDocument<1024> doc;
   JsonArray arr = doc.to<JsonArray>();
 
-  ledSet(ledPin, HIGH);
+  ledSet(ledPin, LOW);   // LOW = aceso (active-low)
   bus.requestTemperatures();
 
   for (int i = 0; i < count; i++) {
@@ -96,7 +105,7 @@ static String readBusJson(DallasTemperature& bus, int count, DeviceAddress addrs
     }
   }
 
-  ledSet(ledPin, LOW);
+  ledSet(ledPin, HIGH);  // HIGH = apagado (active-low)
 
   String out;
   serializeJson(doc, out);
@@ -152,14 +161,14 @@ String busDiagJson(int busNum) {
   DeviceAddress*     addrs  = (busNum == 1) ? addrBus1  : addrBus2;
   int                ledPin = (busNum == 1) ? LED_BUS1  : LED_BUS2;
 
-  ledSet(ledPin, HIGH);
+  ledSet(ledPin, LOW);   // LOW = aceso (active-low)
   bus.requestTemperatures();
   int responding = 0;
   for (int i = 0; i < count; i++) {
     float t = bus.getTempC(addrs[i]);
     if (t != DEVICE_DISCONNECTED_C) responding++;
   }
-  ledSet(ledPin, LOW);
+  ledSet(ledPin, HIGH);  // HIGH = apagado (active-low)
 
   int quality = (count > 0) ? (responding * 100 / count) : 0;
 

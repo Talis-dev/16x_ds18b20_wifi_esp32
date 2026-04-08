@@ -43,12 +43,12 @@ void ethernetSetup() {
   }
 
   if (Ethernet.linkStatus() == LinkON) {
-    ledSet(LED_NET, HIGH);
+    ledSet(LED_NET, LOW);   // LOW = aceso (active-low)
     Serial.println();
     Serial.print(F("[ETH] IP: "));
     Serial.println(Ethernet.localIP());
   } else {
-    ledSet(LED_NET, LOW);
+    ledSet(LED_NET, HIGH);  // HIGH = apagado
     Serial.println(F("\n[ETH] Sem link físico!"));
   }
 }
@@ -71,9 +71,9 @@ void ethernetMaintain() {
   }
 
   if (Ethernet.linkStatus() == LinkON) {
-    ledSet(LED_NET, HIGH);
+    ledSet(LED_NET, LOW);   // LOW = aceso (active-low)
   } else {
-    ledSet(LED_NET, LOW);
+    ledSet(LED_NET, HIGH);  // HIGH = apagado
     Serial.println(F("[ETH] Link perdido!"));
   }
 }
