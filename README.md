@@ -1,10 +1,116 @@
-# 📡 Sistema de Monitoramento com ESP32 e Sensores DS18B20
+# DS18B20 Multi-Bus – ESP32 + W5500 Ethernet (v2)
 
-## 📌 Descrição do Projeto
+> **v2** – Migrado de WiFi+MQTT para **Ethernet W5500 + HTTP POST**, 2 barramentos OneWire, servidor web embutido.
 
-Este projeto utiliza um **ESP32** conectado a **quatro barramentos One Wire**, cada um suportando até **4 sensores de temperatura DS18B20** distribuídos ao longo do cabeamento. O sistema realiza medições precisas e comunica os dados via **MQTT** para um servidor, que plota os valores em um gráfico na web. 
+Leitura de até 16 sensores DS18B20 por barramento OneWire com envio de dados via **HTTP POST** e servidor web embutido para monitoramento e configuração.
 
-Cada barramento possui um **potenciômetro** para ajuste do "pull-up" do sinal, garantindo estabilidade na comunicação, independentemente da distância e do número de sensores conectados.
+---
+
+## Hardware
+
+### W5500 (SPI)
+| Pino W5500 | GPIO ESP32 | Função             |
+|-----------|-----------|---------------------|
+| MOSI      | 23        | Dados Saída         |
+| MISO      | 19        | Dados Entrada       |
+| SCLK      | 18        | Clock               |
+| SCS (CS)  | 5         | Seleção do Chip     |
+| RST       | 33        | Reset               |
+| INT       | 4         | Interrupção (opc.)  |
+
+### Barramentos OneWire
+| Barramento | GPIO |
+|-----------|------|
+| Bus 1     | 25   |
+| Bus 2     | 26   |
+
+### LEDs
+| LED              | GPIO | Função                      |
+|-----------------|------|-----------------------------|
+| Status Rede     | 12   | Ligado = link OK            |
+| Atividade Bus 1 | 14   | Pisca durante leitura Bus 1 |
+| Atividade Bus 2 | 27   | Pisca durante leitura Bus 2 |
+
+---
+
+## Arquivos do Projeto
+
+| Arquivo                  | Descrição                                         |
+|--------------------------|---------------------------------------------------|
+| `ds18b20_ESP32_eth.ino`  | Arquivo principal – setup / loop                  |
+| `config.h`               | Estrutura de configuração + helpers EEPROM        |
+| `ethernet.ino`           | Inicialização W5500, DHCP, status JSON            |
+| `sensors.ino`            | Scan OneWire, leituras, diagnóstico de barramento |
+| `http_client.ino`        | POST HTTP para servidor externo                   |
+| `web_server.ino`         | Servidor HTTP embutido (UI + API REST)            |
+| `leds.ino`               | Controle dos LEDs de feedback                     |
+
+---
+
+## Bibliotecas necessárias (Arduino IDE / PlatformIO)
+
+- **Ethernet** (`arduino-libraries/Ethernet` ≥ 2.0 – suporte W5500)
+- **OneWire** (`paulstoffregen/OneWire`)
+- **DallasTemperature** (`milesburton/DallasTemperature`)
+- **ArduinoJson** (`bblanchon/ArduinoJson` ≥ 6)
+- **EEPROM** (inclusa no core ESP32)
+
+---
+
+## API REST (porta 80)
+
+| Método | Rota          | Descrição                                         |
+|--------|---------------|---------------------------------------------------|
+| GET    | `/`           | Página web de monitoramento e configuração        |
+| GET    | `/api/status` | JSON com leituras, status de rede e configuração  |
+| GET    | `/api/diag`   | JSON com diagnóstico de qualidade dos barramentos |
+| POST   | `/api/config` | Atualiza configurações (JSON body)                |
+| POST   | `/api/scan`   | Re-escaneia sensores e envia lista ao servidor    |
+
+### Exemplo: salvar configuração
+```json
+POST /api/config
+{
+  "serverHost": "192.168.1.50",
+  "serverPort": 3000,
+  "serverPath": "/api/sensors",
+  "pollInterval": 15000,
+  "deviceName": "sala_fria_01"
+}
+```
+
+---
+
+## Diagnóstico de qualidade do barramento
+
+A rota `/api/diag` e a página web exibem a porcentagem de sensores respondentes por barramento com barra de qualidade colorida.
+Isso auxilia na calibração do trimpot de pull-up conforme o comprimento do cabo.
+
+| Qualidade | Ação sugerida                    |
+|-----------|----------------------------------|
+| 100 %     | Ótimo                            |
+| ≥ 75 %    | Bom                              |
+| ≥ 50 %    | Regular – ajuste o pull-up       |
+| < 50 %    | Ruim – verifique cabos e pull-up |
+
+---
+
+## Configurações persistentes (EEPROM)
+
+Salvas na EEPROM interna do ESP32 e sobrevivem a resets.
+Na primeira inicialização (EEPROM vazia) os valores padrão são gravados automaticamente.
+
+---
+
+## Histórico
+- **v1** – WiFi + MQTT (4 barramentos)
+- **v2** – Ethernet W5500 + HTTP POST (2 barramentos, servidor web embutido)
+
+---
+
+## Legado (v1)
+
+Código original em `ds18b20_ESP32_wif.ino` e `reconect.ino` (mantidos para referência).
 
 ---
 
