@@ -3,10 +3,16 @@ int reboot = 0;
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi desconectado. MQTT aguardando reconexao da rede.");
+      return;
+    }
+
    Serial.println(" MQTT connection... ");
   
     if (client.connect("sensors_ds18b20_ESP32")) {
      Serial.println("connected MQTT");
+      reboot = 0;
       // Once connected, publish an announcement...
      client.publish("sensors_ds18b20_esp32", "sensors_ds18b20_esp32 Online");
 

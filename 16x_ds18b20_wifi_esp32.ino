@@ -34,8 +34,8 @@ DallasTemperature sensors4(&oneWire4);
 int numberOfDevices1, numberOfDevices2, numberOfDevices3, numberOfDevices4;
 DeviceAddress tempDeviceAddress;
 
-const char* ssid = "name";  
-const char* password =  "passw";
+const char* wifiApName = "Sensors_ds18b20";
+const char* wifiApPassword = "ds18b20123";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -43,6 +43,8 @@ const char* mqtt_server = "server";
 unsigned long lastmillis = 0;
 int timeToSend = 10000; //10s
 bool send_addres = false;
+unsigned long lastWifiReconnectAttempt = 0;
+int wifiReconnectAttempts = 0;
 
 
 void setup() {
@@ -63,27 +65,18 @@ void setup() {
   digitalWrite(LED_5, HIGH);
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.persistent(true);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
 
-  Serial.print("Connecting to WiFi..");
-  int restart = 0;
-  while (WiFi.status() != WL_CONNECTED && restart < 30) {
-    digitalWrite(LED_5, LOW);
-    delay(150);
+  WiFiManager wifiManager;
+  wifiManager.setConfigPortalTimeout(240);
+  wifiManager.setConnectTimeout(30);
+  if (!wifiManager.autoConnect(wifiApName, wifiApPassword)) {
     digitalWrite(LED_5, HIGH);
-    delay(150);
-    Serial.print(".");
-    restart++;
-  }
-  if (restart >= 30) {
-    digitalWrite(LED_5, HIGH);
-    WiFiManager wifiManager;
-    wifiManager.setConfigPortalTimeout(240);
-    if (!wifiManager.autoConnect("Sensors_ds18b20", "ds18b20123")) {
-      Serial.println(F("Falha na conexão. Resetar e tentar novamente..."));
-      delay(500);
-      ESP.restart();
-    }
+    Serial.println(F("Falha na conexão. Resetar e tentar novamente..."));
+    delay(500);
+    ESP.restart();
   }
 
   Serial.println(F("Conectado na rede Wifi."));
@@ -113,7 +106,35 @@ digitalWrite(LED_5, LOW);
 delay(100);
 }
 
+void handleWiFiDisconnect() {
+  digitalWrite(LED_5, HIGH);
+
+  unsigned long now = millis();
+  if (now - lastWifiReconnectAttempt < 10000) {
+    return;
+  }
+
+  lastWifiReconnectAttempt = now;
+  wifiReconnectAttempts++;
+
+  Serial.print(F("WiFi desconectado. Tentativa de reconexao "));
+  Serial.println(wifiReconnectAttempts);
+  WiFi.reconnect();
+
+  if (wifiReconnectAttempts >= 30) {
+    Serial.println(F("WiFi nao reconectou. Reiniciando para abrir o WiFiManager se necessario."));
+    delay(500);
+    ESP.restart();
+  }
+}
+
 void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    handleWiFiDisconnect();
+    return;
+  }
+
+  wifiReconnectAttempts = 0;
   client.loop();
   if (!client.connected()) {
     digitalWrite(LED_5, LOW);
