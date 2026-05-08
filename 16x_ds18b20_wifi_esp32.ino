@@ -5,6 +5,9 @@
 
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <WebServer.h>
+#include <Preferences.h>
+#include "config.h"
 
 // Definição dos GPIOs para os barramentos
 #define ONE_WIRE_BUS_1 23
@@ -37,23 +40,33 @@ DallasTemperature sensors4(&oneWire4);
 int numberOfDevices1, numberOfDevices2, numberOfDevices3, numberOfDevices4;
 DeviceAddress tempDeviceAddress;
 
-const char* wifiApName = "Sensors_ds18b20";
+const char* wifiApName     = "Sensors_ds18b20";
 const char* wifiApPassword = "ds18b20123";
 
-WiFiClient espClient;
+Config cfg;
+String g_busCache[4] = {"[]", "[]", "[]", "[]"};
+
+WiFiClient   espClient;
 PubSubClient client(espClient);
-const char* mqtt_server = "server";
+WebServer    webServer(80);
+
 unsigned long lastmillis = 0;
-int timeToSend = 10000; //10s
 bool send_addres = false;
 unsigned long lastWifiReconnectAttempt = 0;
 int wifiReconnectAttempts = 0;
+unsigned long lastMqttAttempt = 0;
+#define MQTT_RETRY_INTERVAL 5000  // 5s entre tentativas MQTT
+
+// Declaracoes antecipadas de reconect.ino
+extern bool mqttFailed;
+extern int  reboot;
 
 
 void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println("Inicializando");
+  configLoad(cfg);
 
   pinMode(BOOT_BUTTON, INPUT_PULLUP);
 
@@ -112,8 +125,9 @@ void setup() {
   Serial.print(F("Endereço IP: "));
   Serial.println(WiFi.localIP());
 
-  client.setServer(mqtt_server, 1883);
+  client.setServer(cfg.mqttServer, cfg.mqttPort);
   client.setCallback(callback);
+  webServerSetup();
 digitalWrite(LED_5, LOW);
   // Inicializar bibliotecas
   sensors1.begin();
@@ -165,10 +179,12 @@ void loop() {
 
   wifiReconnectAttempts = 0;
   client.loop();
-  if (!client.connected()) {
-    digitalWrite(LED_5, LOW);
-    Serial.println("CLIENTE DESCONECTADO!");
-    reconnect();
+  handleWebClient();
+  if (!client.connected() && !mqttFailed) {
+    if (millis() - lastMqttAttempt >= MQTT_RETRY_INTERVAL) {
+      lastMqttAttempt = millis();
+      reconnect();
+    }
   }
 
 if(!send_addres){
@@ -181,19 +197,21 @@ sendDeviceList(sensors4, numberOfDevices4, "sensors_ds18b20/barramento_4");
 }
 
 
-  if (millis() - lastmillis > timeToSend) {
+  if (millis() - lastmillis > cfg.pollInterval) {
     lastmillis = millis();
     digitalWrite(LED_5, HIGH);
-    sendTemperaturesWithAddress(sensors1, numberOfDevices1, "barramento_1", LED_1);
-    sendTemperaturesWithAddress(sensors2, numberOfDevices2, "barramento_2", LED_2);
-    sendTemperaturesWithAddress(sensors3, numberOfDevices3, "barramento_3", LED_3);
-    sendTemperaturesWithAddress(sensors4, numberOfDevices4, "barramento_4", LED_4);
+    sendTemperaturesWithAddress(sensors1, numberOfDevices1, "barramento_1", LED_1, 0);
+    sendTemperaturesWithAddress(sensors2, numberOfDevices2, "barramento_2", LED_2, 1);
+    sendTemperaturesWithAddress(sensors3, numberOfDevices3, "barramento_3", LED_3, 2);
+    sendTemperaturesWithAddress(sensors4, numberOfDevices4, "barramento_4", LED_4, 3);
     digitalWrite(LED_5, LOW);
   }
 }
 
-void sendTemperaturesWithAddress(DallasTemperature& sensors, int numberOfDevices, const char* topic, int ledPin) {
-  StaticJsonDocument<256> doc;
+void sendTemperaturesWithAddress(DallasTemperature& sensors, int numberOfDevices, const char* topic, int ledPin, int busIndex) {
+  StaticJsonDocument<256>  doc;
+  StaticJsonDocument<1024> cacheDoc;
+  JsonArray cacheArr = cacheDoc.to<JsonArray>();
   bool dataInsert = false;
 
   digitalWrite(LED_5, HIGH);
@@ -215,6 +233,9 @@ void sendTemperaturesWithAddress(DallasTemperature& sensors, int numberOfDevices
       Serial.println(tempC);
 
       doc[addressString] = tempC;
+      JsonObject entry = cacheArr.createNestedObject();
+      entry["addr"] = addressString;
+      entry["temp"] = tempC;
       dataInsert = true;
     }
   }
@@ -228,7 +249,8 @@ void sendTemperaturesWithAddress(DallasTemperature& sensors, int numberOfDevices
 
   client.publish(topic, json.c_str());
 
-  
+  serializeJson(cacheArr, g_busCache[busIndex]);
+
   digitalWrite(ledPin, LOW);
   digitalWrite(LED_5, LOW);
   delay(100);
@@ -262,7 +284,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 
   if (strcmp(topic, "timeToSend_ds18b20_esp32") == 0) {
-    timeToSend = PayLoad.toInt();
+    int val = PayLoad.toInt();
+    if (val > 0) cfg.pollInterval = (uint32_t)val;
   }
 }
 
