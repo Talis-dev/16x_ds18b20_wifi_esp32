@@ -19,6 +19,9 @@
 #define LED_4 14
 #define LED_5 4
 
+#define BOOT_BUTTON 0
+#define BOOT_HOLD_MS 3000
+
 // Instâncias OneWire e DallasTemperature para cada barramento
 OneWire oneWire1(ONE_WIRE_BUS_1);
 OneWire oneWire2(ONE_WIRE_BUS_2);
@@ -52,6 +55,8 @@ void setup() {
   delay(100);
   Serial.println("Inicializando");
 
+  pinMode(BOOT_BUTTON, INPUT_PULLUP);
+
   pinMode(LED_1, OUTPUT);
   pinMode(LED_2, OUTPUT);
   pinMode(LED_3, OUTPUT);
@@ -68,6 +73,30 @@ void setup() {
   WiFi.persistent(true);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
+
+  // Verifica se o botão BOOT está pressionado por 3s para resetar credenciais WiFi
+  if (digitalRead(BOOT_BUTTON) == LOW) {
+    Serial.println(F("Botao BOOT pressionado. Aguardando 3s para resetar credenciais WiFi..."));
+    unsigned long pressStart = millis();
+    while (digitalRead(BOOT_BUTTON) == LOW) {
+      digitalWrite(LED_5, !digitalRead(LED_5));
+      delay(200);
+      if (millis() - pressStart >= BOOT_HOLD_MS) {
+        Serial.println(F("Resetando credenciais WiFi e abrindo portal de configuracao..."));
+        digitalWrite(LED_5, HIGH);
+        WiFiManager wifiManager;
+        wifiManager.resetSettings();
+        wifiManager.setConfigPortalTimeout(240);
+        if (!wifiManager.startConfigPortal(wifiApName, wifiApPassword)) {
+          Serial.println(F("Portal encerrado sem configuracao. Reiniciando..."));
+        }
+        delay(500);
+        ESP.restart();
+      }
+    }
+    Serial.println(F("Botao solto antes de 3s. Continuando normalmente."));
+    digitalWrite(LED_5, HIGH);
+  }
 
   WiFiManager wifiManager;
   wifiManager.setConfigPortalTimeout(240);
