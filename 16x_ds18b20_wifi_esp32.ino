@@ -34,9 +34,6 @@ DallasTemperature sensors4(&oneWire4);
 int numberOfDevices1, numberOfDevices2, numberOfDevices3, numberOfDevices4;
 DeviceAddress tempDeviceAddress;
 
-const char* ssid = "name";  
-const char* password =  "passw";
-
 WiFiClient espClient;
 PubSubClient client(espClient);
 const char* mqtt_server = "server";
@@ -63,27 +60,17 @@ void setup() {
   digitalWrite(LED_5, HIGH);
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
 
-  Serial.print("Connecting to WiFi..");
-  int restart = 0;
-  while (WiFi.status() != WL_CONNECTED && restart < 30) {
-    digitalWrite(LED_5, LOW);
-    delay(150);
-    digitalWrite(LED_5, HIGH);
-    delay(150);
-    Serial.print(".");
-    restart++;
-  }
-  if (restart >= 30) {
-    digitalWrite(LED_5, HIGH);
-    WiFiManager wifiManager;
-    wifiManager.setConfigPortalTimeout(240);
-    if (!wifiManager.autoConnect("Sensors_ds18b20", "ds18b20123")) {
-      Serial.println(F("Falha na conexão. Resetar e tentar novamente..."));
-      delay(500);
-      ESP.restart();
-    }
+  // Usa WiFiManager como único método de conexão.
+  // Tenta credenciais salvas no flash automaticamente.
+  // Se falhar ou não houver credenciais, abre o portal de configuração.
+  WiFiManager wifiManager;
+  wifiManager.setConfigPortalTimeout(240);
+  wifiManager.setConnectTimeout(30);
+  if (!wifiManager.autoConnect("Sensors_ds18b20", "ds18b20123")) {
+    Serial.println(F("Falha na conexão. Resetar e tentar novamente..."));
+    delay(500);
+    ESP.restart();
   }
 
   Serial.println(F("Conectado na rede Wifi."));
