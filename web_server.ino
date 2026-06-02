@@ -2,15 +2,27 @@
  * web_server.ino
  * Servidor HTTP embarcado (porta 80) para gerenciamento MQTT e visualizacao de sensores.
  *
- * Rotas:
- *   GET  /           -> Pagina HTML: status, sensores, formulario MQTT
- *   POST /config     -> Salva configuracoes MQTT
- *   POST /scan       -> Re-escaneia sensores
- *   GET  /api/status -> JSON (clientes externos)
+ * Rotas HTML (formulario):
+ *   GET  /                   -> Pagina: status, barramentos, controles, config MQTT
+ *   POST /config             -> Salva configuracoes MQTT (form)
+ *   POST /scan               -> Re-escaneia sensores OneWire
+ *
+ * API REST (JSON):
+ *   GET  /api/status         -> Status completo do dispositivo
+ *   GET  /api/config         -> Configuracao atual (sem senha)
+ *   POST /api/config         -> Atualiza configuracao via JSON body
+ *   POST /api/restart        -> Solicita reinicio do ESP32
+ *   POST /api/mqtt/reconnect -> Forca reconexao MQTT imediata
  */
 
-extern bool mqttFailed;
-extern int  reboot;
+extern bool          mqttFailed;
+extern int           reboot;
+extern bool          mqttEverConnected;
+extern unsigned long g_mqttRetryInterval;
+extern bool          restartRequested;
+extern unsigned long restartAt;
+extern bool          send_addres;
+extern void          mqttForceReconnect();
 
 // -------------------------------------------------------
 // Envia tabela HTML de um barramento
@@ -123,6 +135,7 @@ static void handleRoot() {
     "background:#00d4ff;color:#000;border:none;border-radius:4px;"
     "padding:9px 18px;cursor:pointer;font-weight:bold;margin-top:10px}"
     ".btn-warn{background:#ff9800}"
+    ".btn-danger{background:#f44336;color:#fff}"
     ".grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}"
     "#refresh-bar{font-size:.78em;color:#555;margin-bottom:10px}"
     "</style></head><body>"));
@@ -140,7 +153,24 @@ static void handleRoot() {
     "t--;var el=document.getElementById('rc');"
     "if(el)el.textContent=t+'s';"
     "if(t<=0)location.reload();"
-    "},1000);</script>"));
+    "},1000);"
+    "function restartCpu(){"
+    "if(!confirm('Reiniciar o ESP32?'))return;"
+    "var m=document.getElementById('ctrl-msg');"
+    "if(m){m.textContent='Reiniciando... aguarde 5s';m.style.color='#f44336';}"
+    "fetch('/api/restart',{method:'POST'})"
+    ".then(function(){setTimeout(function(){location.reload();},5000);});"
+    "}"
+    "function mqttReconnect(){"
+    "var m=document.getElementById('ctrl-msg');"
+    "if(m){m.textContent='Reconectando...';m.style.color='#ff9800';}"
+    "fetch('/api/mqtt/reconnect',{method:'POST'})"
+    ".then(function(r){return r.json();})"
+    ".then(function(d){"
+    "if(m){m.textContent=d.message||'OK';m.style.color='#4caf50';}"
+    "setTimeout(function(){location.reload();},2000);});"
+    "}"
+    "</script>"));
 
   // Cabecalho
   {
@@ -201,6 +231,15 @@ static void handleRoot() {
   }
 
   webServer.sendContent(F("</div>")); // fim .srow
+
+  // Card de controles
+  webServer.sendContent(F(
+    "<div class='card'><h3>Controles</h3>"
+    "<span id='ctrl-msg' style='font-size:.85em;display:block;margin-bottom:8px'></span>"
+    "<button class='btn-warn' onclick='mqttReconnect()'>Reconectar MQTT</button>"
+    "&nbsp;"
+    "<button class='btn-danger' onclick='restartCpu()'>Reiniciar CPU</button>"
+    "</div>"));
 
   // Tabelas dos 4 barramentos
   sendBusTable(1);
@@ -288,16 +327,20 @@ static void handleFormScan() {
 // -------------------------------------------------------
 static void handleApiStatus() {
   StaticJsonDocument<512> doc;
-  doc["ip"]        = WiFi.localIP().toString();
-  doc["rssi"]      = WiFi.RSSI();
-  doc["ssid"]      = WiFi.SSID();
-  doc["mqtt"]      = client.connected();
-  doc["mqttFail"]  = mqttFailed;
-  doc["uptime_ms"] = millis();
-  doc["free_heap"] = ESP.getFreeHeap();
-  doc["poll_ms"]   = cfg.pollInterval;
-  doc["device"]    = cfg.deviceName;
-  JsonObject devs  = doc.createNestedObject("devices");
+  doc["ip"]                   = WiFi.localIP().toString();
+  doc["rssi"]                 = WiFi.RSSI();
+  doc["ssid"]                 = WiFi.SSID();
+  doc["mqtt"]                 = client.connected();
+  doc["mqttFail"]             = mqttFailed;
+  doc["mqttRetries"]          = reboot;
+  doc["mqttRetryIntervalMs"]  = g_mqttRetryInterval;
+  doc["uptime_ms"]            = millis();
+  doc["free_heap"]            = ESP.getFreeHeap();
+  doc["poll_ms"]              = cfg.pollInterval;
+  doc["device"]               = cfg.deviceName;
+  doc["server"]               = cfg.mqttServer;
+  doc["port"]                 = cfg.mqttPort;
+  JsonObject devs             = doc.createNestedObject("devices");
   devs["bus1"] = numberOfDevices1;
   devs["bus2"] = numberOfDevices2;
   devs["bus3"] = numberOfDevices3;
@@ -308,13 +351,89 @@ static void handleApiStatus() {
 }
 
 // -------------------------------------------------------
+// POST /api/restart
+// -------------------------------------------------------
+static void handleApiRestart() {
+  webServer.send(200, "application/json",
+    "{\"result\":\"ok\",\"message\":\"Reiniciando em 1.5s\"}");
+  restartRequested = true;
+  restartAt = millis() + 1500;
+  Serial.println(F("[WEB] Reinicio solicitado via HTTP"));
+}
+
+// -------------------------------------------------------
+// POST /api/mqtt/reconnect
+// -------------------------------------------------------
+static void handleApiMqttReconnect() {
+  send_addres = false;     // reenvia lista de sensores apos reconexao
+  mqttForceReconnect();
+  webServer.send(200, "application/json",
+    "{\"result\":\"ok\",\"message\":\"Reconexao MQTT iniciada\"}");
+}
+
+// -------------------------------------------------------
+// GET /api/config  -- retorna config atual em JSON (sem senha)
+// -------------------------------------------------------
+static void handleApiConfigGet() {
+  StaticJsonDocument<256> doc;
+  doc["server"]   = cfg.mqttServer;
+  doc["port"]     = cfg.mqttPort;
+  doc["clientid"] = cfg.mqttClientId;
+  doc["user"]     = cfg.mqttUser;
+  doc["name"]     = cfg.deviceName;
+  doc["poll_ms"]  = cfg.pollInterval;
+  // senha nao retornada por seguranca
+  String out;
+  serializeJson(doc, out);
+  webServer.send(200, "application/json", out);
+}
+
+// -------------------------------------------------------
+// POST /api/config  -- atualiza config via JSON body
+// -------------------------------------------------------
+static void handleApiConfigPostJson() {
+  String body = webServer.arg("plain");
+  if (body.length() == 0) {
+    webServer.send(400, "application/json", "{\"error\":\"body vazio\"}");
+    return;
+  }
+  StaticJsonDocument<512> doc;
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    webServer.send(400, "application/json", "{\"error\":\"JSON invalido\"}");
+    return;
+  }
+  if (doc.containsKey("server"))   strlcpy(cfg.mqttServer,   doc["server"]   | cfg.mqttServer,   sizeof(cfg.mqttServer));
+  if (doc.containsKey("port"))     cfg.mqttPort     = (uint16_t)(doc["port"]   | (int)cfg.mqttPort);
+  if (doc.containsKey("clientid")) strlcpy(cfg.mqttClientId, doc["clientid"] | cfg.mqttClientId, sizeof(cfg.mqttClientId));
+  if (doc.containsKey("user"))     strlcpy(cfg.mqttUser,     doc["user"]     | cfg.mqttUser,     sizeof(cfg.mqttUser));
+  if (doc.containsKey("pass"))     strlcpy(cfg.mqttPass,     doc["pass"]     | cfg.mqttPass,     sizeof(cfg.mqttPass));
+  if (doc.containsKey("name"))     strlcpy(cfg.deviceName,   doc["name"]     | cfg.deviceName,   sizeof(cfg.deviceName));
+  if (doc.containsKey("poll_ms")) {
+    uint32_t p = (uint32_t)(doc["poll_ms"] | (int)cfg.pollInterval);
+    if (p >= 1000) cfg.pollInterval = p;
+  }
+  configSave(cfg);
+  mqttFailed = false;
+  reboot = 0;
+  client.disconnect();
+  client.setServer(cfg.mqttServer, cfg.mqttPort);
+  Serial.printf("[WEB] Config API salva: %s:%u\n", cfg.mqttServer, cfg.mqttPort);
+  webServer.send(200, "application/json", "{\"result\":\"ok\",\"message\":\"Config salva\"}");
+}
+
+// -------------------------------------------------------
 // Setup e loop
 // -------------------------------------------------------
 void webServerSetup() {
-  webServer.on("/",           HTTP_GET,  handleRoot);
-  webServer.on("/config",     HTTP_POST, handleFormConfig);
-  webServer.on("/scan",       HTTP_POST, handleFormScan);
-  webServer.on("/api/status", HTTP_GET,  handleApiStatus);
+  webServer.on("/",                   HTTP_GET,  handleRoot);
+  webServer.on("/config",             HTTP_POST, handleFormConfig);
+  webServer.on("/scan",               HTTP_POST, handleFormScan);
+  webServer.on("/api/status",         HTTP_GET,  handleApiStatus);
+  webServer.on("/api/restart",        HTTP_POST, handleApiRestart);
+  webServer.on("/api/mqtt/reconnect", HTTP_POST, handleApiMqttReconnect);
+  webServer.on("/api/config",         HTTP_GET,  handleApiConfigGet);
+  webServer.on("/api/config",         HTTP_POST, handleApiConfigPostJson);
   webServer.onNotFound([]() {
     webServer.send(404, "application/json", "{\"error\":\"not found\"}");
   });

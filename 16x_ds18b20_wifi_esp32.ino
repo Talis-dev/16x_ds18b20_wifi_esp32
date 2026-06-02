@@ -51,15 +51,19 @@ PubSubClient client(espClient);
 WebServer    webServer(80);
 
 unsigned long lastmillis = 0;
-bool send_addres = false;
+bool send_addres = false;           // device list enviado apos 1a conexao MQTT
+bool restartRequested = false;      // flag para reinicio solicitado via HTTP
+unsigned long restartAt = 0;
 unsigned long lastWifiReconnectAttempt = 0;
 int wifiReconnectAttempts = 0;
 unsigned long lastMqttAttempt = 0;
-#define MQTT_RETRY_INTERVAL 5000  // 5s entre tentativas MQTT
 
 // Declaracoes antecipadas de reconect.ino
-extern bool mqttFailed;
-extern int  reboot;
+extern bool          mqttFailed;
+extern int           reboot;
+extern bool          mqttEverConnected;
+extern unsigned long g_mqttRetryInterval;
+extern void          mqttForceReconnect();
 
 
 void setup() {
@@ -178,23 +182,33 @@ void loop() {
   }
 
   wifiReconnectAttempts = 0;
+
+  // Reinicio solicitado via HTTP (aguarda resposta ser enviada antes)
+  if (restartRequested && millis() >= restartAt) {
+    Serial.println(F("[SYS] Reiniciando por solicitacao HTTP..."));
+    delay(200);
+    ESP.restart();
+  }
+
   client.loop();
   handleWebClient();
-  if (!client.connected() && !mqttFailed) {
-    if (millis() - lastMqttAttempt >= MQTT_RETRY_INTERVAL) {
+
+  // Reconexao MQTT com backoff exponencial (sem parar apos N falhas)
+  if (!client.connected()) {
+    if (millis() - lastMqttAttempt >= g_mqttRetryInterval) {
       lastMqttAttempt = millis();
       reconnect();
     }
   }
 
-if(!send_addres){
-  send_addres = true;
-// Enviar lista de sensores detectados em cada barramento
-sendDeviceList(sensors1, numberOfDevices1, "sensors_ds18b20/barramento_1");
-sendDeviceList(sensors2, numberOfDevices2, "sensors_ds18b20/barramento_2");
-sendDeviceList(sensors3, numberOfDevices3, "sensors_ds18b20/barramento_3");
-sendDeviceList(sensors4, numberOfDevices4, "sensors_ds18b20/barramento_4");
-}
+  // Envia IDs dos sensores apos primeira conexao MQTT (identifica dispositivos no servidor)
+  if (!send_addres && client.connected()) {
+    send_addres = true;
+    sendDeviceList(sensors1, numberOfDevices1, "sensors_ds18b20/barramento_1");
+    sendDeviceList(sensors2, numberOfDevices2, "sensors_ds18b20/barramento_2");
+    sendDeviceList(sensors3, numberOfDevices3, "sensors_ds18b20/barramento_3");
+    sendDeviceList(sensors4, numberOfDevices4, "sensors_ds18b20/barramento_4");
+  }
 
 
   if (millis() - lastmillis > cfg.pollInterval) {
